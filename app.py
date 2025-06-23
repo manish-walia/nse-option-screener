@@ -2,13 +2,12 @@ import time
 import pandas as pd
 import streamlit as st
 import requests
-import random
 from datetime import datetime
 
 # === CONFIG ===
 symbols = ["NIFTY", "BANKNIFTY", "FINNIFTY"]
-TELEGRAM_TOKEN = "YOUR_BOT_TOKEN"  # Replace with your bot token
-TELEGRAM_CHAT_ID = "YOUR_CHAT_ID"  # Replace with your chat ID
+TELEGRAM_TOKEN = "YOUR_BOT_TOKEN"         # Replace with your Telegram bot token
+TELEGRAM_CHAT_ID = "YOUR_CHAT_ID"         # Replace with your Telegram chat ID
 
 # === TELEGRAM ===
 def send_telegram_message(message):
@@ -19,19 +18,15 @@ def send_telegram_message(message):
     except Exception as e:
         st.error(f"Telegram Error: {e}")
 
-# === NSE FETCH FUNCTION ===
+# === OPTION CHAIN FETCH ===
 @st.cache_data(ttl=60)
 def fetch_option_chain(symbol):
     try:
         url = f"https://web-production-9890.up.railway.app/option-chain/{symbol}"
         response = requests.get(url, timeout=10)
-
         if response.status_code != 200:
             raise Exception(f"Proxy returned status {response.status_code}")
-
         data = response.json()
-        if "records" not in data:
-            raise Exception(f"Invalid data: {data}")
 
         expiry = data['records']['expiryDates'][0]
         ce_data, pe_data = [], []
@@ -56,16 +51,24 @@ def apply_strategy(df, strategy):
     df = df[df["totalTradedVolume"] > 0]
     df["oi_vol_ratio"] = df["changeinOpenInterest"] / df["totalTradedVolume"]
 
+    if df.empty:
+        return df
+
+    avg_oi = df["changeinOpenInterest"].mean()
+    avg_vol = df["totalTradedVolume"].mean()
+    avg_oi_vol = df["oi_vol_ratio"].mean()
+
     if strategy == "Breakout":
-        return df[(df["lastPrice"] > df["previousClose"]) & (df["oi_vol_ratio"] > 0.5)]
+        return df[(df["lastPrice"] > df["previousClose"]) & (df["oi_vol_ratio"] > avg_oi_vol)]
     elif strategy == "Reversal":
-        return df[(df["lastPrice"] < df["previousClose"]) & (df["oi_vol_ratio"] > 0.5)]
+        return df[(df["lastPrice"] < df["previousClose"]) & (df["oi_vol_ratio"] > avg_oi_vol)]
     elif strategy == "Volume Spike":
-        return df[(df["totalTradedVolume"] > 30000)]
+        return df[df["totalTradedVolume"] > avg_vol * 1.5]
     elif strategy == "OI Surge":
-        return df[(df["changeinOpenInterest"] > 10000)]
+        return df[df["changeinOpenInterest"] > avg_oi * 1.5]
     elif strategy == "Momentum":
-        return df[(df["lastPrice"] > df["previousClose"] * 1.05) & (df["oi_vol_ratio"] > 0.8)]
+        return df[(df["lastPrice"] > df["previousClose"] * 1.03) & (df["oi_vol_ratio"] > avg_oi_vol * 1.5)]
+
     return pd.DataFrame()
 
 # === SIGNAL UI ===
@@ -99,6 +102,10 @@ for sym in symbols:
         ce_df['symbol'] = sym
         pe_df['symbol'] = sym
 
+        # Show quick metrics for debugging
+        st.caption(f"🔍 CE Avg OI: {ce_df['changeinOpenInterest'].mean():.0f}, Avg Vol: {ce_df['totalTradedVolume'].mean():.0f}")
+        st.caption(f"🔍 PE Avg OI: {pe_df['changeinOpenInterest'].mean():.0f}, Avg Vol: {pe_df['totalTradedVolume'].mean():.0f}")
+
         ce_filtered = apply_strategy(ce_df, strategy)
         pe_filtered = apply_strategy(pe_df, strategy)
 
@@ -106,7 +113,7 @@ for sym in symbols:
 
         if not signals.empty:
             for _, row in signals.iterrows():
-                side = "CE" if row in ce_filtered.values else "PE"
+                side = "CE" if row["strikePrice"] in ce_filtered["strikePrice"].values else "PE"
                 card = signal_card(row, side, expiry)
                 st.markdown(card, unsafe_allow_html=True)
                 send_telegram_message(f"{sym} {side} {row['strikePrice']} Signal Hit!")
