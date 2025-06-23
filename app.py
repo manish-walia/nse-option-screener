@@ -22,43 +22,26 @@ def send_telegram_message(message):
 # === NSE FETCH FUNCTION ===
 @st.cache_data(ttl=60)
 def fetch_option_chain(symbol):
-    url = f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol}"
-    user_agents = [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-        "Mozilla/5.0 (X11; Linux x86_64)",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"
-    ]
-    headers = {
-        "User-Agent": random.choice(user_agents),
-        "Accept": "*/*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Referer": "https://www.nseindia.com/",
-        "Connection": "keep-alive",
-        "Host": "www.nseindia.com",
-        "X-Requested-With": "XMLHttpRequest",
-        "Accept-Encoding": "gzip, deflate, br"
-    }
-
-    session = requests.Session()
-    session.headers.update(headers)
-
     try:
-        warmup = session.get("https://www.nseindia.com", timeout=5)
-        time.sleep(1)  # Let cookies set
+        url = f"http://localhost:8000/option-chain/{symbol}"
+        response = requests.get(url, timeout=10)
 
-        response = session.get(url, timeout=5)
         if response.status_code != 200:
-            raise Exception(f"NSE returned status {response.status_code}")
+            raise Exception(f"Proxy returned status {response.status_code}")
 
         data = response.json()
+        if "records" not in data:
+            raise Exception(f"Invalid data: {data}")
+
         expiry = data['records']['expiryDates'][0]
         ce_data, pe_data = [], []
 
         for item in data['records']['data']:
             if 'CE' in item and 'PE' in item:
-                ce, pe = item['CE'], item['PE']
-                ce['previousClose'] = ce.get("previousClose") or ce.get("lastPrice")
-                pe['previousClose'] = pe.get("previousClose") or pe.get("lastPrice")
+                ce = item['CE']
+                pe = item['PE']
+                ce["previousClose"] = ce.get("previousClose") or ce.get("lastPrice")
+                pe["previousClose"] = pe.get("previousClose") or pe.get("lastPrice")
                 ce_data.append(ce)
                 pe_data.append(pe)
 
