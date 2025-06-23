@@ -23,7 +23,7 @@ def send_telegram_message(message):
 @st.cache_data(ttl=60)
 def fetch_option_chain(symbol):
     try:
-        url = f"http://localhost:8000/option-chain/{symbol}"
+        url = f"https://web-production-9890.up.railway.app/option-chain/{symbol}"
         response = requests.get(url, timeout=10)
 
         if response.status_code != 200:
