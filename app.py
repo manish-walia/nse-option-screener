@@ -2,16 +2,15 @@ import time
 import pandas as pd
 import streamlit as st
 import requests
+import random
 from datetime import datetime
-from urllib3.util.retry import Retry
-from requests.adapters import HTTPAdapter
 
 # === CONFIG ===
 symbols = ["NIFTY", "BANKNIFTY", "FINNIFTY"]
-TELEGRAM_TOKEN = "YOUR_BOT_TOKEN"
-TELEGRAM_CHAT_ID = "YOUR_CHAT_ID"
+TELEGRAM_TOKEN = "YOUR_BOT_TOKEN"  # Replace with your bot token
+TELEGRAM_CHAT_ID = "YOUR_CHAT_ID"  # Replace with your chat ID
 
-# === TELEGRAM SEND ===
+# === TELEGRAM ===
 def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
@@ -20,44 +19,46 @@ def send_telegram_message(message):
     except Exception as e:
         st.error(f"Telegram Error: {e}")
 
-# === NSE HEADERS & SESSION ===
-def create_nse_session():
-    session = requests.Session()
-    retry = Retry(connect=3, backoff_factor=1)
-    adapter = HTTPAdapter(max_retries=retry)
-    session.mount("https://", adapter)
-
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-        "Accept": "*/*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Referer": "https://www.nseindia.com/",
-        "Connection": "keep-alive"
-    })
-
-    session.get("https://www.nseindia.com", timeout=5)
-    return session
-
-# === FETCH NSE DATA ===
+# === NSE FETCH FUNCTION ===
 @st.cache_data(ttl=60)
 def fetch_option_chain(symbol):
     url = f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol}"
-    session = create_nse_session()
+    user_agents = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "Mozilla/5.0 (X11; Linux x86_64)",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"
+    ]
+    headers = {
+        "User-Agent": random.choice(user_agents),
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.nseindia.com/",
+        "Connection": "keep-alive",
+        "Host": "www.nseindia.com",
+        "X-Requested-With": "XMLHttpRequest",
+        "Accept-Encoding": "gzip, deflate, br"
+    }
+
+    session = requests.Session()
+    session.headers.update(headers)
 
     try:
+        warmup = session.get("https://www.nseindia.com", timeout=5)
+        time.sleep(1)  # Let cookies set
+
         response = session.get(url, timeout=5)
         if response.status_code != 200:
             raise Exception(f"NSE returned status {response.status_code}")
-        data = response.json()
 
+        data = response.json()
         expiry = data['records']['expiryDates'][0]
         ce_data, pe_data = [], []
 
         for item in data['records']['data']:
             if 'CE' in item and 'PE' in item:
                 ce, pe = item['CE'], item['PE']
-                ce['previousClose'] = ce.get("previousClose") or ce.get("lastPrice", 0)
-                pe['previousClose'] = pe.get("previousClose") or pe.get("lastPrice", 0)
+                ce['previousClose'] = ce.get("previousClose") or ce.get("lastPrice")
+                pe['previousClose'] = pe.get("previousClose") or pe.get("lastPrice")
                 ce_data.append(ce)
                 pe_data.append(pe)
 
@@ -77,35 +78,35 @@ def apply_strategy(df, strategy):
     elif strategy == "Reversal":
         return df[(df["lastPrice"] < df["previousClose"]) & (df["oi_vol_ratio"] > 0.5)]
     elif strategy == "Volume Spike":
-        return df[df["totalTradedVolume"] > 30000]
+        return df[(df["totalTradedVolume"] > 30000)]
     elif strategy == "OI Surge":
-        return df[df["changeinOpenInterest"] > 10000]
+        return df[(df["changeinOpenInterest"] > 10000)]
     elif strategy == "Momentum":
         return df[(df["lastPrice"] > df["previousClose"] * 1.05) & (df["oi_vol_ratio"] > 0.8)]
     return pd.DataFrame()
 
-# === DISPLAY SIGNAL CARD ===
+# === SIGNAL UI ===
 def signal_card(row, side, expiry):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     last_price = row["lastPrice"]
     sl = round(last_price * 0.8, 2)
     tgt = round(last_price * 1.5, 2)
     return f"""
-    <div style='background-color:#111;padding:10px;border-radius:10px;margin:10px;color:white'>
+    <div style='background-color:black;padding:10px;border-radius:10px;margin:10px;color:white'>
         <b>📈 {side} {row['strikePrice']} ({row['symbol']})</b><br>
-        🕒 {now} | Expiry: {expiry}<br>
+        🕒 <b>{now}</b> | Expiry: {expiry}<br>
         Entry: ₹{last_price} | SL: ₹{sl} | Target: ₹{tgt}<br>
         OI Change: {row['changeinOpenInterest']} | Vol: {row['totalTradedVolume']}<br>
-        Prev Close: ₹{row['previousClose']} | OI/Vol Ratio: {round(row['oi_vol_ratio'], 2)}
+        Prev Close: ₹{row['previousClose']} | OI/Vol: {round(row['oi_vol_ratio'], 2)}
     </div>
     """
 
-# === STREAMLIT UI ===
-st.set_page_config(page_title="Options Screener", layout="wide")
-st.title("📊 NSE Option Screener with Expert Strategies")
+# === STREAMLIT APP ===
+st.set_page_config(page_title="📊 Option Screener", layout="wide")
+st.title("📊 NSE Option Screener with Expert Strategy")
 
-strategy = st.sidebar.selectbox("🧠 Choose Strategy", ["Breakout", "Reversal", "Volume Spike", "OI Surge", "Momentum"])
-show_raw_data = st.sidebar.checkbox("Show Raw CE/PE Tables", False)
+strategy = st.sidebar.selectbox("📌 Choose Strategy", ["Breakout", "Reversal", "Volume Spike", "OI Surge", "Momentum"])
+show_raw_data = st.sidebar.checkbox("Show Raw CE/PE Data")
 
 for sym in symbols:
     try:
@@ -127,7 +128,7 @@ for sym in symbols:
                 st.markdown(card, unsafe_allow_html=True)
                 send_telegram_message(f"{sym} {side} {row['strikePrice']} Signal Hit!")
         else:
-            st.info("📭 No signals found for this strategy at the moment.")
+            st.info("📭 No signals found for this strategy right now.")
 
         if show_raw_data:
             with st.expander("🔍 CE Raw Data"):
